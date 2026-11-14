@@ -1,0 +1,117 @@
+name: Validate, browser-test and audit Delaris Cake
+# Re-run after the latest Pages deployment so browser tests use the published files.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "index.html"
+      - "dashboard.html"
+      - "menu.html"
+      - "about.html"
+      - "cart.html"
+      - "payment.html"
+      - "style.css"
+      - "script.js"
+      - "home.js"
+      # Include generated responsive image assets after the optimizer commits them.
+      - "assets/optimized/**"
+      - "scripts/optimize-images.mjs"
+      - "scripts/validate-site.mjs"
+      - "scripts/summarize-lighthouse.mjs"
+      - "tests/**"
+      - ".github/workflows/audit-performance.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-browser-and-lighthouse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install validators, browser and Lighthouse
+        run: npm install --no-save sharp postcss parse5 lighthouse wait-on playwright
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Wait for latest GitHub Pages content and responsive images
+        shell: bash
+        run: |
+          npx wait-on --timeout 300000 --interval 5000 https://amir-studio.github.io/DelarisCake/assets/optimized/hero-240.webp https://amir-studio.github.io/DelarisCake/assets/optimized/hero-360.webp https://amir-studio.github.io/DelarisCake/assets/optimized/cakes/cake-2-360.webp
+          for attempt in $(seq 1 60); do
+            html="$(curl -fsSL "https://amir-studio.github.io/DelarisCake/?audit=${GITHUB_SHA}" || true)"
+            cart_html="$(curl -fsSL "https://amir-studio.github.io/DelarisCake/cart.html?audit=${GITHUB_SHA}" || true)"
+            payment_html="$(curl -fsSL "https://amir-studio.github.io/DelarisCake/payment.html?audit=${GITHUB_SHA}" || true)"
+            menu_html="$(curl -fsSL "https://amir-studio.github.io/DelarisCake/menu.html?audit=${GITHUB_SHA}" || true)"
+            dashboard_html="$(curl -fsSL "https://amir-studio.github.io/DelarisCake/dashboard.html?audit=${GITHUB_SHA}" || true)"
+            css="$(curl -fsSL "https://amir-studio.github.io/DelarisCake/style.css?audit=${GITHUB_SHA}" || true)"
+            script="$(curl -fsSL "https://amir-studio.github.io/DelarisCake/script.js?audit=${GITHUB_SHA}" || true)"
+            if grep -Fq 'imagesrcset="assets/optimized/hero-240.webp 240w, assets/optimized/hero-360.webp 360w' <<< "$html" &&
+               grep -Fq ' srcset="assets/optimized/hero-240.webp 240w, assets/optimized/hero-360.webp 360w' <<< "$html" &&
+               grep -Fq 'href="/DelarisCake/favicon.svg"' <<< "$html" &&
+               grep -Fq 'name="description"' <<< "$cart_html" &&
+               grep -Fq 'name="description"' <<< "$payment_html" &&
+               grep -Fq 'id="registerForm"' <<< "$menu_html" &&
+               grep -Fq 'id="loginForm"' <<< "$menu_html" &&
+               grep -Fq 'id="loginTab"' <<< "$menu_html" &&
+               grep -Fq 'id="password"' <<< "$menu_html" &&
+               grep -Fq 'name="description"' <<< "$menu_html" &&
+               grep -Fq 'id="cakeGrid"' <<< "$dashboard_html" &&
+               grep -Fq 'width="720" height="1112"' <<< "$dashboard_html" &&
+               ! grep -Fq 'delaris-my-orders' <<< "$dashboard_html" &&
+               grep -Fq 'min-height: 32px' <<< "$css" &&
+               grep -Fq 'img.width=720;' <<< "$script" &&
+               grep -Fq "cloudImagesLoaded" <<< "$script"; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "GitHub Pages has not published the expected responsive hero markup."
+          exit 1
+      - name: Validate HTML, CSS, JavaScript and image references
+        run: node scripts/validate-site.mjs
+      - name: Browser smoke tests on mobile and desktop
+        run: node tests/smoke.mjs
+      - name: Lighthouse mobile homepage
+        run: npx lighthouse https://amir-studio.github.io/DelarisCake/ --chrome-flags="--headless --no-sandbox --disable-dev-shm-usage" --output=json --output-path=./lighthouse-home-mobile.json --save-assets --quiet
+      - name: Lighthouse desktop homepage
+        run: npx lighthouse https://amir-studio.github.io/DelarisCake/ --preset=desktop --chrome-flags="--headless --no-sandbox --disable-dev-shm-usage" --output=json --output-path=./lighthouse-home-desktop.json --save-assets --quiet
+      - name: Lighthouse mobile gallery
+        run: npx lighthouse https://amir-studio.github.io/DelarisCake/dashboard.html --chrome-flags="--headless --no-sandbox --disable-dev-shm-usage" --output=json --output-path=./lighthouse-gallery-mobile.json --save-assets --quiet
+      - name: Lighthouse desktop gallery
+        run: npx lighthouse https://amir-studio.github.io/DelarisCake/dashboard.html --preset=desktop --chrome-flags="--headless --no-sandbox --disable-dev-shm-usage" --output=json --output-path=./lighthouse-gallery-desktop.json --save-assets --quiet
+      - name: Lighthouse mobile menu and registration
+        run: npx lighthouse https://amir-studio.github.io/DelarisCake/menu.html --chrome-flags="--headless --no-sandbox --disable-dev-shm-usage" --output=json --output-path=./lighthouse-menu-mobile.json --save-assets --quiet
+      - name: Lighthouse desktop menu and registration
+        run: npx lighthouse https://amir-studio.github.io/DelarisCake/menu.html --preset=desktop --chrome-flags="--headless --no-sandbox --disable-dev-shm-usage" --output=json --output-path=./lighthouse-menu-desktop.json --save-assets --quiet
+      - name: Lighthouse mobile About page
+        run: npx lighthouse https://amir-studio.github.io/DelarisCake/about.html --chrome-flags="--headless --no-sandbox --disable-dev-shm-usage" --output=json --output-path=./lighthouse-about-mobile.json --save-assets --quiet
+      - name: Lighthouse desktop About page
+        run: npx lighthouse https://amir-studio.github.io/DelarisCake/about.html --preset=desktop --chrome-flags="--headless --no-sandbox --disable-dev-shm-usage" --output=json --output-path=./lighthouse-about-desktop.json --save-assets --quiet
+      - name: Lighthouse mobile cart
+        run: npx lighthouse https://amir-studio.github.io/DelarisCake/cart.html --chrome-flags="--headless --no-sandbox --disable-dev-shm-usage" --output=json --output-path=./lighthouse-cart-mobile.json --save-assets --quiet
+      - name: Lighthouse desktop cart
+        run: npx lighthouse https://amir-studio.github.io/DelarisCake/cart.html --preset=desktop --chrome-flags="--headless --no-sandbox --disable-dev-shm-usage" --output=json --output-path=./lighthouse-cart-desktop.json --save-assets --quiet
+      - name: Lighthouse mobile payment information
+        run: npx lighthouse https://amir-studio.github.io/DelarisCake/payment.html --chrome-flags="--headless --no-sandbox --disable-dev-shm-usage" --output=json --output-path=./lighthouse-payment-mobile.json --save-assets --quiet
+      - name: Lighthouse desktop payment information
+        run: npx lighthouse https://amir-studio.github.io/DelarisCake/payment.html --preset=desktop --chrome-flags="--headless --no-sandbox --disable-dev-shm-usage" --output=json --output-path=./lighthouse-payment-desktop.json --save-assets --quiet
+      - name: Summarize Lighthouse results
+        if: always()
+        run: node scripts/summarize-lighthouse.mjs
+      - name: Upload Lighthouse reports and Performance traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: delaris-lighthouse-and-traces
+          path: |
+            lighthouse-*.json
+            lighthouse-*.trace.json
+            lighthouse-*.devtoolslog.json
+          if-no-files-found: ignore
+          retention-days: 14
